@@ -49,6 +49,9 @@ PROJECT_FILES = [
     ".env",
 ]
 
+# 主程序 exe（打包时嵌入，安装时复制到安装目录并创建桌面快捷方式）
+MAIN_EXE_NAME = "QQ-Manga-Bot.exe"
+
 
 def get_resource_dir() -> str:
     """返回项目文件所在目录（打包后为 _MEIPASS，开发时为脚本目录）。"""
@@ -154,6 +157,48 @@ def copy_project_files(dest_dir: str) -> bool:
         if os.path.isdir(src_src):
             shutil.copytree(src_src, os.path.join(dest_dir, "src"), dirs_exist_ok=True)
         return True
+    except Exception:
+        return False
+
+
+def copy_main_exe(dest_dir: str) -> bool:
+    """复制主程序 exe 到安装目录。返回是否成功（不存在则返回 False，但不视为致命错误）。"""
+    src_dir = get_resource_dir()
+    src = os.path.join(src_dir, MAIN_EXE_NAME)
+    if not os.path.exists(src):
+        return False
+    try:
+        shutil.copy2(src, os.path.join(dest_dir, MAIN_EXE_NAME))
+        return True
+    except Exception:
+        return False
+
+
+def create_desktop_shortcut(target_exe: str, shortcut_name: str) -> bool:
+    """在桌面创建快捷方式。返回是否成功。"""
+    try:
+        import subprocess
+        desktop = os.path.join(os.environ.get("USERPROFILE", ""), "Desktop")
+        if not os.path.isdir(desktop):
+            # 尝试用注册表获取桌面路径
+            desktop = os.path.join(os.environ.get("USERPROFILE", ""), "OneDrive", "Desktop")
+        if not os.path.isdir(desktop):
+            return False
+
+        # 用 PowerShell 创建 .lnk（WScript.Shell）
+        ps_script = (
+            f"$ws = New-Object -ComObject WScript.Shell; "
+            f"$s = $ws.CreateShortcut('{os.path.join(desktop, shortcut_name)}.lnk'); "
+            f"$s.TargetPath = '{target_exe}'; "
+            f"$s.WorkingDirectory = '{os.path.dirname(target_exe)}'; "
+            f"$s.Save()"
+        )
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_script],
+            capture_output=True, timeout=30,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        return os.path.exists(os.path.join(desktop, shortcut_name + ".lnk"))
     except Exception:
         return False
 
@@ -542,6 +587,14 @@ class InstallerApp:
             self._set_status("正在生成配置...")
             self._write_configs()
 
+            # 复制主程序 exe + 创建桌面快捷方式
+            self._set_status("正在复制主程序并创建桌面快捷方式...")
+            self.main_exe_installed = copy_main_exe(self.install_dir)
+            self.shortcut_created = False
+            if self.main_exe_installed:
+                main_exe_path = os.path.join(self.install_dir, MAIN_EXE_NAME)
+                self.shortcut_created = create_desktop_shortcut(main_exe_path, "QQ漫画机器人")
+
             self._install_done()
         except Exception as e:
             self._install_failed(f"安装出错：{e}")
@@ -606,7 +659,11 @@ class InstallerApp:
             f"NapCat：{self.napcat_path}\n"
             f"QQNT：{self.qqnt_path}\n\n"
         )
-        msg += "后续还需：\n1. 双击安装目录里的 QQ-Manga-Bot.exe 或 main.py 启动\n2. 首次启动 NapCat 扫码登录小号"
+        if getattr(self, "main_exe_installed", False):
+            msg += "✅ 主程序已复制到安装目录\n"
+        if getattr(self, "shortcut_created", False):
+            msg += "✅ 桌面快捷方式已创建\n"
+        msg += "\n后续：\n1. 双击桌面「QQ漫画机器人」快捷方式启动\n2. 首次启动 NapCat 扫码登录小号"
         messagebox.showinfo("完成", msg)
 
 
