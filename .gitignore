@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.venv/
+build/
+dist/
+*.spec
+
+# 日志
+*.log
+jm_bot.log
+
+# 下载内容（含违规内容，绝不能上传）
+downloads/
+
+# 配置（含本机路径，不应上传）
+config.json
+.env
+bot_config.json
+
+# NapCat（第三方二进制，不应打包进仓库）
+NapCat.Shell/
+napcat/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# 系统
+.DS_Store
+Thumbs.db

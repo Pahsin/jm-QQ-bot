@@ -1,0 +1,17 @@
+# QQ 漫画机器人 依赖清单
+# 安装：pip install -r requirements.txt
+
+# nonebot2 框架（含 FastAPI 驱动）
+nonebot2[fastapi]==2.5.0
+nonebot-adapter-onebot==2.4.6
+
+# 漫画下载爬虫
+jmcomic==2.7.9
+
+# 图片合成 PDF
+pillow==13.0.0
+
+# 由 nonebot 自动带入的依赖
+fastapi==0.143.3
+uvicorn==0.54.0
+pydantic==2.14.1

@@ -1,0 +1,13 @@
+# pyproject.toml —— NoneBot2 项目入口配置
+
+[project]
+name = "jm-qq-bot"
+version = "0.1.0"
+description = "QQ 漫画编号下载机器人（个人学习用途）"
+
+[tool.nonebot]
+adapters = [
+    { name = "OneBot V11", module_name = "nonebot.adapters.onebot.v11" },
+]
+plugins = ["src.plugins"]
+plugin_dirs = ["src/plugins"]
