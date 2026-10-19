@@ -77,6 +77,49 @@ def clean_env() -> dict:
     return env
 
 
+def detect_last_account(napcat_dir: str) -> str | None:
+    """从 NapCat 配置目录识别上次登录的 QQ 号。
+
+    扫描 config 目录下 napcat_<QQ号>.json / onebot11_<QQ号>.json 等文件，
+    提取 QQ 号。返回最近登录的 QQ 号，找不到则返回 None。
+    """
+    config_dir = os.path.join(napcat_dir, "config")
+    if not os.path.isdir(config_dir):
+        return None
+    accounts = []
+    import re
+    for f in os.listdir(config_dir):
+        # 匹配 napcat_12345.json / onebot11_12345.json 等
+        m = re.match(r"^(?:napcat|onebot11|napcat_protocol)_(\d+)\.json$", f)
+        if m:
+            qq = m.group(1)
+            # 用文件修改时间作为"最近登录"依据
+            mtime = os.path.getmtime(os.path.join(config_dir, f))
+            accounts.append((mtime, qq))
+    if not accounts:
+        return None
+    accounts.sort(reverse=True)  # 最近的排前面
+    return accounts[0][1]
+
+
+def check_port(host: str, port: int, timeout: float = 1.0) -> bool:
+    """检查端口是否监听（连通性检测）。"""
+    import socket
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
+def check_connectivity() -> dict:
+    """检查 NapCat 与 Bot 的连通性。返回各项状态。"""
+    return {
+        "napcat_webui": check_port("127.0.0.1", 6099),   # NapCat WebUI
+        "bot_ws": check_port("127.0.0.1", 8080),          # nonebot WebSocket
+    }
+
+
 class ProcessManager:
     """管理一个子进程，捕获 stdout/stderr 到队列。"""
 
@@ -135,8 +178,22 @@ class App:
         self.bot_mgr = ProcessManager(self.log_queue, "Bot")
         self.napcat_mgr = ProcessManager(self.log_queue, "NapCat")
 
+        # NapCat 状态缓存（端口检测较慢，避免每 100ms 都连接）
+        self._nap_status_cache = False
+        self._nap_status_time = 0.0
+
         self._build_ui()
+        self._detect_account()
         self.root.after(100, self._poll_logs)
+
+    def _detect_account(self):
+        """启动时检测上次登录账号，更新 UI。"""
+        nap_dir = self.cfg.get("napcat_dir", "")
+        last = detect_last_account(nap_dir) if nap_dir else None
+        if last:
+            self.account_var.set(last)
+        else:
+            self.account_var.set("无历史账号")
 
     def _build_ui(self):
         self.root.title("QQ 漫画机器人 - 控制台")
@@ -170,22 +227,53 @@ class App:
         self.btn_nap = ttk.Button(nap_row, text="启动 NapCat", command=self.toggle_napcat)
         self.btn_nap.pack(side="right")
 
+        # 账号 + 一键登录行
+        account_row = ttk.Frame(ctrl)
+        account_row.pack(fill="x", pady=4)
+        ttk.Label(account_row, text="上次登录账号", width=18).pack(side="left")
+        self.account_var = tk.StringVar(value="检测中...")
+        ttk.Label(account_row, textvariable=self.account_var, foreground="#333").pack(side="left", padx=6)
+        self.btn_quick_login = ttk.Button(
+            account_row, text="一键登录上次账号", command=self.quick_login
+        )
+        self.btn_quick_login.pack(side="right")
+
+        # 连通性行
+        conn_row = ttk.Frame(ctrl)
+        conn_row.pack(fill="x", pady=4)
+        ttk.Label(conn_row, text="连通性", width=18).pack(side="left")
+        self.conn_var = tk.StringVar(value="未检测")
+        ttk.Label(conn_row, textvariable=self.conn_var, foreground="#666").pack(side="left", padx=6)
+        self.btn_check = ttk.Button(conn_row, text="检查连通性", command=self.check_now)
+        self.btn_check.pack(side="right")
+
         # 提示
         tip = tk.Label(
             ctrl,
-            text="提示：先启动 Bot，再启动 NapCat。NapCat 首次启动需扫码登录小号。",
+            text="提示：先启动 Bot，再启动 NapCat。首次启动需扫码登录，之后可一键登录上次账号。",
             fg="#666", font=("微软雅黑", 9),
         )
         tip.pack(anchor="w", pady=(6, 0))
 
-        # 日志区
-        log_frame = ttk.LabelFrame(self.root, text="运行日志", padding=6)
-        log_frame.pack(fill="both", expand=True, padx=12, pady=8)
+        # 日志区（两个独立日志框：Bot + NapCat）
+        log_container = ttk.Frame(self.root)
+        log_container.pack(fill="both", expand=True, padx=12, pady=8)
 
-        self.log_text = scrolledtext.ScrolledText(
-            log_frame, height=18, font=("Consolas", 9), state="disabled", wrap="word"
+        # Bot 日志框
+        bot_log_frame = ttk.LabelFrame(log_container, text="Bot 日志 (nonebot)", padding=4)
+        bot_log_frame.pack(fill="both", expand=True, pady=(0, 4))
+        self.bot_log_text = scrolledtext.ScrolledText(
+            bot_log_frame, height=8, font=("Consolas", 9), state="disabled", wrap="word"
         )
-        self.log_text.pack(fill="both", expand=True)
+        self.bot_log_text.pack(fill="both", expand=True)
+
+        # NapCat 日志框
+        nap_log_frame = ttk.LabelFrame(log_container, text="NapCat 日志", padding=4)
+        nap_log_frame.pack(fill="both", expand=True, pady=(4, 0))
+        self.nap_log_text = scrolledtext.ScrolledText(
+            nap_log_frame, height=8, font=("Consolas", 9), state="disabled", wrap="word"
+        )
+        self.nap_log_text.pack(fill="both", expand=True)
 
         # 底部：清空日志 + 配置按钮
         bottom = ttk.Frame(self.root)
@@ -206,26 +294,38 @@ class App:
         self.root.after(100, self._poll_logs)
 
     def _append_log(self, name: str, line: str):
-        self.log_text.configure(state="normal")
-        self.log_text.insert("end", line)
-        self.log_text.see("end")
-        self.log_text.configure(state="disabled")
+        """按组件名分流到对应日志框。"""
+        if name == "NapCat":
+            widget = self.nap_log_text
+        else:
+            widget = self.bot_log_text
+        widget.configure(state="normal")
+        widget.insert("end", line)
+        widget.see("end")
+        widget.configure(state="disabled")
 
     def clear_log(self):
-        self.log_text.configure(state="normal")
-        self.log_text.delete("1.0", "end")
-        self.log_text.configure(state="disabled")
+        for widget in (self.bot_log_text, self.nap_log_text):
+            widget.configure(state="normal")
+            widget.delete("1.0", "end")
+            widget.configure(state="disabled")
 
     def _refresh_status(self):
-        # Bot 状态
+        # Bot 状态（进程跟踪）
         if self.bot_mgr.running:
             self.bot_status.config(text="● 运行中", foreground="green")
             self.btn_bot.config(text="停止 Bot")
         else:
             self.bot_status.config(text="● 未运行", foreground="#888")
             self.btn_bot.config(text="启动 Bot")
-        # NapCat 状态
-        if self.napcat_mgr.running:
+        # NapCat 状态：改用端口检测（NapCat 是提权独立进程，进程跟踪不到）。
+        # 缓存 2 秒，避免每 100ms 都做 socket 连接卡界面。
+        now = time.time()
+        if now - self._nap_status_time > 2.0:
+            self._nap_status_cache = check_port("127.0.0.1", 6099, timeout=0.8)
+            self._nap_status_time = now
+        nap_running = self._nap_status_cache
+        if nap_running:
             self.nap_status.config(text="● 运行中", foreground="green")
             self.btn_nap.config(text="停止 NapCat")
         else:
@@ -245,47 +345,90 @@ class App:
             if not os.path.exists(script):
                 messagebox.showerror("错误", f"找不到 bot.py: {script}")
                 return
-            self.bot_mgr.start([py, script], cwd=BASE_DIR)
+            # 工作目录设为 bot.py 所在目录（项目根），确保 pyproject.toml、src/ 等相对路径能正确解析
+            bot_cwd = os.path.dirname(os.path.abspath(script))
+            self.bot_mgr.start([py, script], cwd=bot_cwd)
 
     # ---- NapCat 启停 ----
-    def toggle_napcat(self):
-        if self.napcat_mgr.running:
-            self.napcat_mgr.stop()
-            # NapCat 需要额外清理 QQ 进程
-            self._kill_qq()
+    def _launch_napcat(self, quick_qq: str | None = None):
+        """启动 NapCat（内部方法）。quick_qq 指定则用快速登录该账号。"""
+        nap_dir = self.cfg["napcat_dir"]
+        launcher = os.path.join(nap_dir, self.cfg["napcat_launcher"])
+        qq_path = self.cfg["napcat_qq_path"]
+
+        if not os.path.exists(launcher):
+            messagebox.showerror("错误", f"找不到 NapCat 启动器: {launcher}\n请在配置里设置正确的 NapCat 目录。")
+            return False
+        if not os.path.exists(qq_path):
+            messagebox.showerror("错误", f"找不到 QQ: {qq_path}\n请确认 QQNT 已安装，或在配置里修改路径。")
+            return False
+
+        # NapCat 启动：直接调用 NapCat 目录下的 start-napcat.bat（已验证可成功启动的脚本）。
+        # 关键：这个 bat 内部会正确设置 NAPCAT_* 环境变量，并在提权后的管理员
+        # PowerShell 里重新运行整个脚本（环境变量随脚本重设，不会丢失）。
+        bat = os.path.join(nap_dir, "start-napcat.bat")
+        if not os.path.exists(bat):
+            messagebox.showerror("错误", f"找不到 NapCat 启动脚本: {bat}")
+            return False
+
+        # 用 cmd 启动 bat（bat 内部会自行提权，弹 UAC）；传 -q <账号> 实现快速登录
+        args = ["cmd", "/c", "start", "", bat]
+        if quick_qq:
+            args += ["-q", quick_qq]
+
+        subprocess.Popen(
+            args, cwd=nap_dir, creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        if quick_qq:
+            self.log_queue.put(("NapCat", f"[启动] 快速登录账号 {quick_qq}，请在 UAC 窗口点「是」。\n"))
         else:
-            nap_dir = self.cfg["napcat_dir"]
-            launcher = os.path.join(nap_dir, self.cfg["napcat_launcher"])
-            hook = os.path.join(nap_dir, self.cfg["napcat_hook"])
-            qq_path = self.cfg["napcat_qq_path"]
+            self.log_queue.put(("NapCat", "[启动] 已调用 start-napcat.bat，请在 UAC 窗口点「是」。\n"))
+        self.log_queue.put(("NapCat", "[提示] 首次使用请用手机 QQ 扫码登录。\n"))
+        return True
 
-            if not os.path.exists(launcher):
-                messagebox.showerror("错误", f"找不到 NapCat 启动器: {launcher}\n请在配置里设置正确的 NapCat 目录。")
-                return
-            if not os.path.exists(qq_path):
-                messagebox.showerror("错误", f"找不到 QQ: {qq_path}\n请确认 QQNT 已安装，或在配置里修改路径。")
-                return
+    def toggle_napcat(self):
+        # 用端口检测判断 NapCat 是否在运行（提权独立进程，napcat_mgr 跟踪不到）
+        if check_port("127.0.0.1", 6099, timeout=0.8):
+            self._kill_qq()
+            self.log_queue.put(("NapCat", "[停止] 已关闭 QQ 进程。\n"))
+        else:
+            # 普通启动：优先尝试快速登录上次账号
+            last = detect_last_account(self.cfg["napcat_dir"])
+            self._launch_napcat(quick_qq=last)
 
-            # NapCat 需要管理员权限（注入 QQ），且必须设置 NAPCAT_* 环境变量
-            # （缺这些变量时注入残缺，QQ 会报"文件已损坏"或静默闪退）
-            qq_dir = os.path.dirname(qq_path).replace("\\", "/")
-            nap_dir_n = nap_dir.replace("\\", "/")
-            ps_cmd = (
-                "$env:NAPCAT_PATCH_PACKAGE='{n}\\qqnt.json';"
-                "$env:NAPCAT_LOAD_PATH='{n}\\loadNapCat.js';"
-                "$env:NAPCAT_INJECT_PATH='{n}\\NapCatWinBootHook.dll';"
-                "$env:NAPCAT_LAUNCHER_PATH='{n}\\NapCatWinBootMain.exe';"
-                "$env:NAPCAT_MAIN_PATH='{n}\\napcat.mjs';"
-                "Start-Process -FilePath '{l}' -ArgumentList '\"{q}\"','\"{h}\"' -Verb RunAs"
-            ).format(n=nap_dir_n, l=launcher, q=qq_path, h=hook)
-            cmd = [
-                "powershell", "-NoProfile", "-Command", ps_cmd
-            ]
-            # 提权进程由 UAC 拉起，不走本进程树，不能用 ProcessManager 跟踪
-            # （跟踪会因 stdout 管道在提权后失效而误判）
-            subprocess.Popen(cmd, cwd=nap_dir, creationflags=subprocess.CREATE_NO_WINDOW)
-            self.log_queue.put(("NapCat", "[启动] 已请求提权启动 NapCat，请在 UAC 窗口点「是」。\n"))
-            self.log_queue.put(("NapCat", "[提示] 登录方式：自动快速登录上次账号；首次使用请用手机 QQ 扫码。\n"))
+    def quick_login(self):
+        """一键登录上次登录的账号。"""
+        last = detect_last_account(self.cfg["napcat_dir"])
+        if not last:
+            messagebox.showwarning("提示", "未检测到历史登录账号，将使用扫码登录。")
+            self._launch_napcat()
+            return
+        # 确认后快速登录
+        if messagebox.askyesno("一键登录", f"检测到上次登录账号：{last}\n\n是否用该账号快速登录？"):
+            self._launch_napcat(quick_qq=last)
+
+    def check_now(self):
+        """检查 NapCat 与 Bot 的连通性（后台线程执行，避免卡界面）。"""
+        self.btn_check.config(state="disabled")
+        self.conn_var.set("检测中...")
+
+        def _do_check():
+            result = check_connectivity()
+            lines = []
+            lines.append("NapCat (6099): " + ("✅已连" if result["napcat_webui"] else "❌未连"))
+            lines.append("Bot (8080): " + ("✅已连" if result["bot_ws"] else "❌未连"))
+            status_text = "  ".join(lines)
+            self.root.after(0, lambda: self.conn_var.set(status_text))
+            self.root.after(0, lambda: self.btn_check.config(state="normal"))
+            self.log_queue.put(("检查", "[连通性] " + status_text + "\n"))
+            if not result["napcat_webui"] and not result["bot_ws"]:
+                self.log_queue.put(("检查", "[提示] 两者都未连接，请先启动 Bot 和 NapCat。\n"))
+            elif not result["napcat_webui"]:
+                self.log_queue.put(("检查", "[提示] NapCat 未连接，可能还在启动或需扫码登录。\n"))
+            elif not result["bot_ws"]:
+                self.log_queue.put(("检查", "[提示] Bot 未连接，请检查 Bot 是否启动成功。\n"))
+
+        threading.Thread(target=_do_check, daemon=True).start()
 
     def _kill_qq(self):
         """停止 NapCat 时清理 QQ 进程。"""
