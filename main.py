@@ -350,6 +350,41 @@ class App:
             self.bot_mgr.start([py, script], cwd=bot_cwd)
 
     # ---- NapCat 启停 ----
+    def _write_napcat_bat(self, nap_dir: str, qq_path: str) -> str:
+        """动态生成 start-napcat.bat（根据实际 QQ 路径，适配任意安装位置）。"""
+        bat_content = f'''@echo off
+setlocal DisableDelayedExpansion
+cd /d "%~dp0" || exit /b 1
+chcp 65001 >nul
+
+set "QQPath={qq_path}"
+
+set "NAPCAT_PATCH_PACKAGE=%cd%\\qqnt.json"
+set "NAPCAT_LOAD_PATH=%cd%\\loadNapCat.js"
+set "NAPCAT_INJECT_PATH=%cd%\\NapCatWinBootHook.dll"
+set "NAPCAT_LAUNCHER_PATH=%cd%\\NapCatWinBootMain.exe"
+set "NAPCAT_MAIN_PATH=%cd%\\napcat.mjs"
+
+net session >nul 2>&1
+if not errorlevel 1 goto :napcat_admin
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0launcher-elevate.ps1" wt.exe "%~f0" %*
+exit /b %ERRORLEVEL%
+
+:napcat_admin
+if not exist "%QQPath%" (
+    echo [ERROR] QQ not found: %QQPath%
+    pause
+    exit /b 1
+)
+echo Starting NapCat ...
+"%NAPCAT_LAUNCHER_PATH%" "%QQPath%" "%NAPCAT_INJECT_PATH%" %*
+exit /b %ERRORLEVEL%
+'''
+        bat = os.path.join(nap_dir, "start-napcat.bat")
+        with open(bat, "w", encoding="utf-8") as f:
+            f.write(bat_content)
+        return bat
+
     def _launch_napcat(self, quick_qq: str | None = None):
         """启动 NapCat（内部方法）。quick_qq 指定则用快速登录该账号。"""
         nap_dir = self.cfg["napcat_dir"]
@@ -363,13 +398,11 @@ class App:
             messagebox.showerror("错误", f"找不到 QQ: {qq_path}\n请确认 QQNT 已安装，或在配置里修改路径。")
             return False
 
-        # NapCat 启动：直接调用 NapCat 目录下的 start-napcat.bat（已验证可成功启动的脚本）。
-        # 关键：这个 bat 内部会正确设置 NAPCAT_* 环境变量，并在提权后的管理员
-        # PowerShell 里重新运行整个脚本（环境变量随脚本重设，不会丢失）。
-        bat = os.path.join(nap_dir, "start-napcat.bat")
-        if not os.path.exists(bat):
-            messagebox.showerror("错误", f"找不到 NapCat 启动脚本: {bat}")
-            return False
+        # 动态生成 start-napcat.bat（用实际 QQ 路径，适配任意安装位置）。
+        # 这个 bat 内部设置 NAPCAT_* 环境变量，并在提权后的管理员 PowerShell 里
+        # 重新运行整个脚本（环境变量随脚本重设，不会丢失）。
+        # 之前直接 Start-Process -Verb RunAs 启动 exe 会导致环境变量在提权边界丢失。
+        bat = self._write_napcat_bat(nap_dir, qq_path)
 
         # 用 cmd 启动 bat（bat 内部会自行提权，弹 UAC）；传 -q <账号> 实现快速登录
         args = ["cmd", "/c", "start", "", bat]
@@ -382,7 +415,7 @@ class App:
         if quick_qq:
             self.log_queue.put(("NapCat", f"[启动] 快速登录账号 {quick_qq}，请在 UAC 窗口点「是」。\n"))
         else:
-            self.log_queue.put(("NapCat", "[启动] 已调用 start-napcat.bat，请在 UAC 窗口点「是」。\n"))
+            self.log_queue.put(("NapCat", "[启动] 已生成并调用 start-napcat.bat，请在 UAC 窗口点「是」。\n"))
         self.log_queue.put(("NapCat", "[提示] 首次使用请用手机 QQ 扫码登录。\n"))
         return True
 
