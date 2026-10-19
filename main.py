@@ -266,13 +266,26 @@ class App:
                 messagebox.showerror("错误", f"找不到 QQ: {qq_path}\n请确认 QQNT 已安装，或在配置里修改路径。")
                 return
 
-            # NapCat 需要管理员权限，通过 powershell 提权启动
+            # NapCat 需要管理员权限（注入 QQ），且必须设置 NAPCAT_* 环境变量
+            # （缺这些变量时注入残缺，QQ 会报"文件已损坏"或静默闪退）
+            qq_dir = os.path.dirname(qq_path).replace("\\", "/")
+            nap_dir_n = nap_dir.replace("\\", "/")
+            ps_cmd = (
+                "$env:NAPCAT_PATCH_PACKAGE='{n}\\qqnt.json';"
+                "$env:NAPCAT_LOAD_PATH='{n}\\loadNapCat.js';"
+                "$env:NAPCAT_INJECT_PATH='{n}\\NapCatWinBootHook.dll';"
+                "$env:NAPCAT_LAUNCHER_PATH='{n}\\NapCatWinBootMain.exe';"
+                "$env:NAPCAT_MAIN_PATH='{n}\\napcat.mjs';"
+                "Start-Process -FilePath '{l}' -ArgumentList '\"{q}\"','\"{h}\"' -Verb RunAs"
+            ).format(n=nap_dir_n, l=launcher, q=qq_path, h=hook)
             cmd = [
-                "powershell", "-NoProfile", "-Command",
-                f"Start-Process -FilePath '{launcher}' -ArgumentList '{qq_path}','{hook}' -Verb RunAs"
+                "powershell", "-NoProfile", "-Command", ps_cmd
             ]
-            self.napcat_mgr.start(cmd, cwd=nap_dir)
-            self.log_queue.put(("NapCat", "[提示] 已请求提权启动，请在弹出的 UAC 窗口点击「是」，然后用手机 QQ 扫码登录。\n"))
+            # 提权进程由 UAC 拉起，不走本进程树，不能用 ProcessManager 跟踪
+            # （跟踪会因 stdout 管道在提权后失效而误判）
+            subprocess.Popen(cmd, cwd=nap_dir, creationflags=subprocess.CREATE_NO_WINDOW)
+            self.log_queue.put(("NapCat", "[启动] 已请求提权启动 NapCat，请在 UAC 窗口点「是」。\n"))
+            self.log_queue.put(("NapCat", "[提示] 登录方式：自动快速登录上次账号；首次使用请用手机 QQ 扫码。\n"))
 
     def _kill_qq(self):
         """停止 NapCat 时清理 QQ 进程。"""
