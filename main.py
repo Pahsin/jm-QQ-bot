@@ -20,8 +20,17 @@ import time
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 
-# 项目根目录（本文件所在目录）
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# 项目根目录
+# 关键：打包成 exe 后，__file__ 指向 PyInstaller 临时解压目录，不是真实目录。
+# 所以要用 sys.executable（exe 所在目录）作为 BASE_DIR，这样 config.json 和
+# venv、bot.py 等都能在 exe 旁边正确找到。
+if getattr(sys, "frozen", False):
+    # 打包后：exe 所在目录
+    BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    # 开发模式：脚本所在目录
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 
 # 默认配置
